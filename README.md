@@ -16,6 +16,7 @@ RK3588 嵌入式 Linux 学习笔记仓库，涵盖 U-Boot 启动流程、QEMU �
   - `main.c` — 命令处理主循环（autoboot / cli_loop / bootstd）
 - **启动流程全解文档**（`docs/`）：Mermaid 流程图 + 完整函数调用链 + `start.S` 寄存器级逐条解读
 - **Obsidian 学习笔记**（`obsidian-notes/`）：U-Boot 学习笔记、动手实验指南、RK3588 适配要点、ROS2-Gazebo 仿真方案等 7 篇
+- **✅ RK3588 真板 bring-up**（2026-07-22）：Rockchip SDK U-Boot 编译并烧录真板——`idbloader.img`（DDR init + SPL）+ `u-boot.itb`（U-Boot + BL31），含完整编译流程与踩坑记录（详见 [U-Boot学习笔记.md](u-boot-notes/obsidian-notes/U-Boot学习笔记.md) 第 14 节）
 
 详细说明见 [u-boot-notes/README.md](u-boot-notes/README.md)
 
@@ -25,7 +26,7 @@ RK3588 嵌入式 Linux 学习笔记仓库，涵盖 U-Boot 启动流程、QEMU �
 - **虚拟机**：Ubuntu 20.04（VMware）
 - **交叉编译工具链**：ARM GNU Toolchain 13.2.Rel1
 - **仿真平台**：QEMU 4.2.1（arm64 / `qemu_arm64_defconfig`）
-- **U-Boot 版本**：主线 2026.07
+- **U-Boot 版本**：主线 2026.07（仿真）+ Rockchip SDK `rockchip-linux/u-boot`（真板，`ARCH=arm`）
 - **目标芯片**：Rockchip RK3588
 
 ## 学习路线
@@ -34,6 +35,7 @@ RK3588 嵌入式 Linux 学习笔记仓库，涵盖 U-Boot 启动流程、QEMU �
 2. 📖 **源码**：按 `start.S → board_f.c → board_r.c → main.c → bootm.c` 顺序阅读注释版源码
 3. 🔧 **实验**：参照 [U-Boot 动手实验操作说明](u-boot-notes/obsidian-notes/U-Boot动手实验操作说明.md) 在 QEMU 上实践
 4. 🎯 **进阶**：阅读 [U-Boot 学习笔记](u-boot-notes/obsidian-notes/U-Boot学习笔记.md) 了解 RK3588 适配要点
+5. 🔌 **真板**：按 [U-Boot 学习笔记](u-boot-notes/obsidian-notes/U-Boot学习笔记.md) 第 14 节用 Rockchip SDK 编译烧录 RK3588（idbloader.img + u-boot.itb）
 
 ## 相关资源
 

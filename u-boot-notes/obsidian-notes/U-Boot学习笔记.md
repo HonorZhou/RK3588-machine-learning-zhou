@@ -25,6 +25,8 @@ source: conversation
 - [[#10. 完整实战流程记录|10. 完整实战流程记录]]
 - [[#11. 相关笔记|11. 相关笔记]]
 - [[#12. 新版 U-Boot API 变化踩坑|12. 新版 U-Boot API 变化踩坑]]
+- [[#13. 在 U-Boot 中运行程序|13. 在 U-Boot 中运行程序]]
+- [[#14. Rockchip SDK U-Boot 编译实战（RK3588 真板）|14. Rockchip SDK U-Boot 编译实战（RK3588 真板）]]
 
 ---
 
@@ -621,6 +623,8 @@ config TARGET_MY_RK3588_BOARD
 | 6 | `arch/arm/lib/bootm.c` | 启动内核流程 |
 | 7 | `drivers/` | 各种驱动 |
 
+> 逐文件精读指南见 **U-Boot 源码精读专题**：[[04-技术/嵌入式Linux/U-Boot源码阅读/U-Boot启动流程总览|U-Boot 启动流程总览]]（含 board_f.c / board_r.c / bootm.c 等 8 篇）。
+
 ---
 
 ## 10. 完整实战流程记录
@@ -726,10 +730,25 @@ No more bootdevs
 
 ## 11. 相关笔记
 
+- [[04-技术/嵌入式Linux/U-Boot-ARM64启动流程白话解读-20260721|U-Boot ARM64 启动流程白话解读]] — 从上电到跳转内核的完整流程
+- [[04-技术/嵌入式Linux/Buildroot系统构建与RK3588三板迁移方案|Buildroot 系统构建与 RK3588 三板迁移方案]] — QEMU→OPi 5B→ROCK 5C→定制板四阶段方案
 - [[RK3588-LinuxUBoot开源项目学习指南-20260710]]
 - [[RK3588-嵌入式Linux学习路径与机器狗部署答疑-20260710]]
 - [[RK3588-自制开发板硬件设计指南-20260710]]
 - [[RK3588-仿真模拟学习方案-20260710]]
+
+### U-Boot 源码精读专题（TRAE 整理，2026-07-20 ingest）
+
+> 以下 8 篇为聚焦具体源码文件的精读笔记，与本章形成互补（本章重"路线/实战"，专题重"逐文件精读"）。
+
+- [[04-技术/嵌入式Linux/U-Boot源码阅读/U-Boot启动流程总览|U-Boot 启动流程总览]]（专题索引）
+- [[04-技术/嵌入式Linux/U-Boot源码阅读/preboot与autoboot|preboot 与 autoboot]]
+- [[04-技术/嵌入式Linux/U-Boot源码阅读/U-Boot引导后是否还存在|U-Boot 引导后是否还存在]]
+- [[04-技术/嵌入式Linux/U-Boot源码阅读/INITCALL机制|INITCALL 机制]]
+- [[04-技术/嵌入式Linux/U-Boot源码阅读/board_f.c阅读指南|board_f.c 阅读指南]]
+- [[04-技术/嵌入式Linux/U-Boot源码阅读/board_r.c阅读指南|board_r.c 阅读指南]]
+- [[04-技术/嵌入式Linux/U-Boot源码阅读/bootm.c阅读指南|bootm.c 阅读指南]]
+- [[04-技术/嵌入式Linux/U-Boot源码阅读/CPU架构速查|CPU 架构速查]]
 
 ---
 
@@ -850,4 +869,278 @@ static int show_memory_layout(void)
 
 ---
 
+## 13. 在 U-Boot 中运行程序
+
+> 能否在 U-Boot 中运行自定义程序？能。能否写摄像头采集程序？理论上能但极不推荐。本节详细分析。
+
+### 13.1 U-Boot 运行程序的四种方式
+
+#### 方式一：Standalone 应用（`go` 命令）
+
+U-Boot 提供 standalone API，允许编译独立小程序在 U-Boot 环境中直接运行，不需要 Linux 内核。
+
+**源码自带示例**：
+```
+examples/standalone/
+  ├── hello_world.c      ← 最简单的示例
+  ├── stub_functions.c   ← U-Boot API 桩函数
+  └── Makefile
+```
+
+**编译**：
+```bash
+make CROSS_COMPILE=aarch64-none-linux-gnu- -j$(nproc) examples
+```
+
+**运行**：
+```bash
+# 加载到内存（TFTP 或 SD 卡）
+=> tftp 0x40000000 hello_world.bin
+# 或
+=> fatload mmc 0 0x40000000 hello_world.bin
+
+# 执行
+=> go 0x40000000
+```
+
+**standalone 程序能用什么**：
+
+| 能力 | 说明 |
+|------|------|
+| printf 输出 | 通过 U-Boot 串口 |
+| 内存读写 | 直接操作物理地址 |
+| U-Boot API 调用 | 通过 `exports.h` 导出的函数表（getenv/setenv/stdio 等）|
+| ❌ Linux 系统调用 | 没有 OS，无 syscall |
+| ❌ 标准C库 | malloc/printf 是 U-Boot 提供的简化版 |
+
+#### 方式二：自定义命令（编译进 U-Boot）
+
+之前已实现过——写 `cmd/hello.c` 注册自定义命令。本质上是"在 U-Boot 里运行程序"，只是程序被编译进了 U-Boot 本体。详见 §5.3。
+
+#### 方式三：`bootm` / `booti` 启动 Linux 内核
+
+不算"在 U-Boot 里运行"，而是 U-Boot 加载并跳转到 Linux 内核。但可以加载任何符合 ARM64 Image 格式的程序：
+```bash
+=> booti 0x40000000 - 0x42000000   # kernel - dtb
+```
+
+#### 方式四：脚本方式（`source` 命令）
+
+U-Boot 支持运行脚本，相当于批处理程序：
+```bash
+# 加载脚本到内存
+=> fatload mmc 0 0x40000000 boot.scr
+
+# 执行脚本
+=> source 0x40000000
+```
+
+脚本内容示例：
+```bash
+# boot.scr
+echo "Running my script..."
+setenv bootargs console=ttyAMA0
+load mmc 0 0x40000000 Image
+booti 0x40000000
+```
+
+#### 四种方式对比
+
+| 方式 | 复杂度 | 能力 | 适用场景 |
+|------|--------|------|----------|
+| **standalone (`go`)** | 中 | 直接操作硬件，有 U-Boot API | 硬件测试、裸机程序 |
+| **自定义命令** | 低 | U-Boot 内部功能 | 扩展 U-Boot 功能 |
+| **`bootm`/`booti`** | 高 | 完整 OS | 启动 Linux |
+| **脚本 (`source`)** | 低 | U-Boot 命令组合 | 自动化启动流程 |
+
+### 13.2 在 U-Boot 中写摄像头程序的可行性
+
+#### 结论：理论上能，实际上极不推荐
+
+U-Boot 的 `drivers/video/` 目录只有**输出类**驱动（LCD/HDMI/eDP 显示面板），**没有摄像头输入驱动**。
+
+| 方向 | Linux 内核 | U-Boot |
+|------|-----------|--------|
+| 显示输出 | `drivers/gpu/drm/`、`drivers/video/fbdev/` | `drivers/video/` ✅ 有 |
+| 摄像头输入 | `drivers/media/usb/uvc/`、`drivers/media/platform/` | ❌ **没有** |
+| USB UVC | `drivers/media/usb/uvc/uvc_driver.c` | ❌ **没有** |
+| V4L2 框架 | `drivers/media/v4l2-core/` | ❌ **没有** |
+
+U-Boot 定位是 Bootloader，只需要显示 logo/菜单，不需要图像采集。
+
+#### 如果硬要写 USB 摄像头程序，需要从零实现：
+
+```
+1. USB Host 驱动        ← U-Boot 有（drivers/usb/host/）
+2. USB 设备枚举          ← U-Boot 有（但只支持存储/网络/键盘类）
+3. UVC 协议栈            ← U-Boot 没有，需自己写
+   - 视频流探测/协商
+   - 等时传输（isochronous transfer）
+   - MJPEG/YUYV 解码
+4. 帧缓冲显示            ← U-Boot 有（drivers/video/）
+```
+
+其中 **UVC 协议栈**是最难的部分——Linux 内核的 UVC 驱动有几千行代码，U-Boot 里完全没有。
+
+#### 方案对比
+
+| 方案 | 难度 | 推荐度 |
+|------|------|--------|
+| U-Boot 里写摄像头驱动 | 🔴 极高，需自己实现 UVC 协议栈 | ❌ 不推荐 |
+| U-Boot 里写非 USB 摄像头驱动（MIPI/并行接口） | 🟡 高，但可行 | ⚠️ 看具体硬件 |
+| U-Boot standby + `go` 跳转裸机程序 | 🟡 中 | ✅ 可行 |
+| 进 Linux 内核后用 V4L2 | 🟢 低 | ✅✅ 强烈推荐 |
+| U-Boot 只做显示，Linux 做采集 | 🟢 低 | ✅✅ 标准做法 |
+
+#### 正确路线
+
+```
+U-Boot 负责启动 → 加载 Linux 内核 → 在 Linux 中用 V4L2/UVC 驱动操作摄像头
+```
+
+进 Linux 后一行命令就能拍照：
+```bash
+v4l2-ctl --device=/dev/video0 --stream-mmap --stream-count=1
+```
+
+> 💡 如果目的是学习裸机摄像头，可以用 U-Boot 的 `go` 命令跳转到自己写的裸机程序，但这与"在 U-Boot 中运行"已不同——U-Boot 只负责启动，程序独立运行在裸金属上。
+
+---
+
+## 14. Rockchip SDK U-Boot 编译实战（RK3588 真板）
+
+> 2026-07-22：使用 Rockchip 官方 SDK U-Boot 成功编译 RK3588 烧录镜像。
+
+### 14.1 主线 U-Boot vs Rockchip SDK U-Boot
+
+| 对比项 | 主线 U-Boot | Rockchip SDK U-Boot |
+|--------|------------|---------------------|
+| 仓库 | `github.com/u-boot/u-boot` | `github.com/rockchip-linux/u-boot` |
+| 目录结构 | `arch/arm64/` | `arch/arm/`（含 armv8 子目录）|
+| ARCH 参数 | `ARCH=arm64` | **`ARCH=arm`** |
+| defconfig | `evb-rk3588_defconfig` | **`rk3588_defconfig`** |
+| BL31/TPL | 不需要 | 需要（rkbin 提供）|
+| 适用场景 | QEMU 仿真验证 | **真板烧录** |
+
+⚠️ **关键区别**：Rockchip SDK U-Boot 虽然编译 64 位代码，但 `ARCH=arm`，不要用 `ARCH=arm64`，否则符号链接 `arch/arm64/include/asm/arch` 创建失败。
+
+### 14.2 环境准备
+
+```bash
+# 1. 克隆 rkbin（Rockchip 预编译固件）
+cd ~
+git clone https://github.com/rockchip-linux/rkbin.git
+
+# 2. 克隆 Rockchip SDK U-Boot
+git clone --depth=1 https://github.com/rockchip-linux/u-boot.git u-boot-rk
+cd u-boot-rk
+
+# 3. 安装依赖
+sudo apt install device-tree-compiler -y
+```
+
+rkbin 中 RK3588 关键固件：
+- `rk3588_bl31_v1.54.elf` — BL31（ARM Trusted Firmware）
+- `rk3588_ddr_1.15.bin` — DDR 初始化固件
+- `rk3588_spl_loader_v1.xx.bin` — SPL loader
+
+### 14.3 编译流程
+
+```bash
+# 配置
+make ARCH=arm CROSS_COMPILE=aarch64-linux-gnu- rk3588_defconfig
+
+# 编译
+make ARCH=arm CROSS_COMPILE=aarch64-linux-gnu- \
+  BL31=../rkbin/bin/rk35/rk3588_bl31_v1.54.elf \
+  ROCKCHIP_TPL=../rkbin/bin/rk35/rk3588_ddr_1.15.bin \
+  -j$(nproc)
+```
+
+### 14.4 生成 u-boot.itb 和 idbloader.img
+
+`make` 默认只生成 `u-boot.bin` 和 `spl/u-boot-spl.bin`，还需额外步骤生成烧录镜像。
+
+#### 问题1：bl31.elf 找不到
+
+`make_fit_atf.sh` 脚本在当前目录找 `./bl31.elf`，不是用 BL31 参数路径。需要手动复制：
+
+```bash
+cp ../rkbin/bin/rk35/rk3588_bl31_v1.54.elf bl31.elf
+```
+
+#### 问题2：tee.bin 找不到
+
+`make_fit_atf.sh` 还需要 `tee.bin`（OP-TEE 固件）。rkbin 里没有 RK3588 的 tee，创建空文件跳过：
+
+```bash
+touch tee.bin
+```
+
+#### 生成 u-boot.itb
+
+```bash
+make ARCH=arm CROSS_COMPILE=aarch64-linux-gnu- \
+  BL31=../rkbin/bin/rk35/rk3588_bl31_v1.54.elf \
+  u-boot.itb
+```
+
+#### 生成 idbloader.img
+
+```bash
+tools/mkimage -n rk3588 -T rksd \
+  -d tpl/u-boot-tpl.bin:spl/u-boot-spl.bin \
+  idbloader.img
+```
+
+### 14.5 烧录产物
+
+| 文件 | 大小 | 用途 | 烧录位置 |
+|------|------|------|----------|
+| `idbloader.img` | 320K | DDR init + SPL | SD 卡 `seek=64`（0x40 扇区，32KB）|
+| `u-boot.itb` | 1.6M | U-Boot 主体 + BL31 | SD 卡 `seek=16384`（0x4000 扇区，8MB）|
+| `u-boot.bin` | 1.4M | 原始镜像 | 备用 |
+
+### 14.6 烧录到 SD 卡
+
+```bash
+# 假设 SD 卡为 /dev/sdb
+sudo dd if=idbloader.img of=/dev/sdb seek=64
+sudo dd if=u-boot.itb of=/dev/sdb seek=16384
+sync
+```
+
+⚠️ RK3588 串口波特率为 **1500000**，不是 115200。
+
+### 14.7 三块板子适配
+
+| 板子 | defconfig | 备注 |
+|------|-----------|------|
+| EVB/自制板 | `rk3588_defconfig` | 通用配置，外设可能不全但能启动 |
+| ROCK 5C | `rock-5c-rk3588s_defconfig`（主线）| SDK 中可用 `rk3588_defconfig` |
+| Orange Pi 5B | `orangepi-5-rk3588s_defconfig`（主线）| SDK 中可用 `rk3588_defconfig` |
+
+### 14.8 踩坑总结
+
+| 问题 | 原因 | 解决 |
+|------|------|------|
+| `arch/arm64/` 不存在 | Rockchip SDK 用 `arch/arm/`，不是 `arch/arm64/` | 用 `ARCH=arm` |
+| `rk3588-evb1-v10_defconfig` 找不到 | SDK 名字是 `rk3588_defconfig` | 用正确名字 |
+| `bl31.elf` 找不到 | 脚本在当前目录找，不是用 BL31 参数 | 手动 `cp` 复制 |
+| `tee.bin` 找不到 | rkbin 无 RK3588 tee | `touch tee.bin` 空文件 |
+| `dtc: not found` | 未安装设备树编译器 | `apt install device-tree-compiler` |
+| git clone 不完整 | 磁盘空间 93% 满 | 删旧目录 + `--depth=1` |
+
+### 14.9 相关链接
+
+- [[Buildroot系统构建与RK3588三板迁移方案|Buildroot 系统构建与 RK3588 三板迁移方案]]
+- [[U-Boot-ARM64启动流程白话解读-20260721|U-Boot ARM64 启动流程白话解读]]
+- [[U-Boot-ARM64启动流程全解文档-20260721|U-Boot ARM64 启动流程全解文档]]
+- [[嵌入式存储与内存概念辨析-20260721|嵌入式存储与内存概念辨析]]
+
+---
+
 ## 更新日志
+
+- 2026-07-22：新增§14 Rockchip SDK U-Boot 编译实战——主线 vs SDK 区别（ARCH=arm、defconfig 名字不同）、完整编译流程、bl31.elf/tee.bin/dtc 踩坑、idbloader.img 和 u-boot.itb 生成方法、SD 卡烧录命令
+- 2026-07-21：新增§13 在 U-Boot 中运行程序——四种运行方式（standalone/go/脚本/bootm）、摄像头程序可行性分析（U-Boot 无摄像头驱动框架，需进 Linux 用 V4L2）
